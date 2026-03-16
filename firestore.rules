@@ -1,0 +1,100 @@
+// ===============================================================
+// Assumed Data Model
+// ===============================================================
+//
+// Collection: customers
+// Fields:
+//   - name: string (required)
+//   - email: string (optional)
+//   - phone: string (optional)
+//   - company: string (optional)
+//   - status: string (required, enum: Lead, Contact, Customer, Inactive)
+//   - source: string (optional)
+//   - ownerId: string (required)
+//   - createdAt: string (optional)
+//   - updatedAt: string (optional)
+//
+// Collection: interactions
+// Fields:
+//   - customerId: string (required)
+//   - type: string (required, enum: Call, Email, Meeting, Note)
+//   - content: string (required)
+//   - date: string (required)
+//   - ownerId: string (required)
+//
+// Collection: tasks
+// Fields:
+//   - customerId: string (required)
+//   - title: string (required)
+//   - dueDate: string (optional)
+//   - status: string (required, enum: Pending, Completed)
+//   - ownerId: string (required)
+//
+// ===============================================================
+
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(ownerId) {
+      return isAuthenticated() && request.auth.uid == ownerId;
+    }
+
+    function isDocOwner() {
+      return isAuthenticated() && request.auth.uid == resource.data.ownerId;
+    }
+
+    function isValidCustomer(data) {
+      return data.keys().hasAll(['name', 'status', 'ownerId']) &&
+             data.name is string && data.name.size() > 0 && data.name.size() < 200 &&
+             data.status in ['Lead', 'Contact', 'Customer', 'Inactive'] &&
+             data.ownerId == request.auth.uid;
+    }
+
+    function isValidInteraction(data) {
+      return data.keys().hasAll(['customerId', 'type', 'content', 'ownerId']) &&
+             data.type in ['Call', 'Email', 'Meeting', 'Note'] &&
+             data.content is string && data.content.size() > 0 && data.content.size() < 5000 &&
+             data.ownerId == request.auth.uid;
+    }
+
+    function isValidTask(data) {
+      return data.keys().hasAll(['customerId', 'title', 'status', 'ownerId']) &&
+             data.title is string && data.title.size() > 0 && data.title.size() < 500 &&
+             data.status in ['Pending', 'Completed'] &&
+             data.ownerId == request.auth.uid;
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+
+    match /customers/{customerId} {
+      allow read: if isDocOwner();
+      allow create: if isAuthenticated() && isValidCustomer(request.resource.data);
+      allow update: if isDocOwner() && isValidCustomer(request.resource.data);
+      allow delete: if isDocOwner();
+    }
+
+    match /interactions/{interactionId} {
+      allow read: if isDocOwner();
+      allow create: if isAuthenticated() && isValidInteraction(request.resource.data);
+      allow update: if isDocOwner() && isValidInteraction(request.resource.data);
+      allow delete: if isDocOwner();
+    }
+
+    match /tasks/{taskId} {
+      allow read: if isDocOwner();
+      allow create: if isAuthenticated() && isValidTask(request.resource.data);
+      allow update: if isDocOwner() && isValidTask(request.resource.data);
+      allow delete: if isDocOwner();
+    }
+  }
+}

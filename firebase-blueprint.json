@@ -1,0 +1,61 @@
+{
+  "entities": {
+    "Customer": {
+      "title": "Customer",
+      "description": "A lead or client in the CRM system.",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "description": "Full name of the customer" },
+        "email": { "type": "string", "format": "email", "description": "Email address" },
+        "phone": { "type": "string", "description": "Phone number" },
+        "company": { "type": "string", "description": "Company name" },
+        "status": { "type": "string", "enum": ["Lead", "Contact", "Customer", "Inactive"], "description": "Current status in the pipeline" },
+        "source": { "type": "string", "description": "Where the lead came from" },
+        "ownerId": { "type": "string", "description": "UID of the user who owns this record" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Creation timestamp" },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Last update timestamp" }
+      },
+      "required": ["name", "status", "ownerId"]
+    },
+    "Interaction": {
+      "title": "Interaction",
+      "description": "A log of communication with a customer.",
+      "type": "object",
+      "properties": {
+        "customerId": { "type": "string", "description": "ID of the customer" },
+        "type": { "type": "string", "enum": ["Call", "Email", "Meeting", "Note"], "description": "Type of interaction" },
+        "content": { "type": "string", "description": "Details of the interaction" },
+        "date": { "type": "string", "format": "date-time", "description": "When it happened" },
+        "ownerId": { "type": "string", "description": "UID of the user who logged this" }
+      },
+      "required": ["customerId", "type", "content", "ownerId"]
+    },
+    "Task": {
+      "title": "Task",
+      "description": "A follow-up task related to a customer.",
+      "type": "object",
+      "properties": {
+        "customerId": { "type": "string", "description": "ID of the customer" },
+        "title": { "type": "string", "description": "Task description" },
+        "dueDate": { "type": "string", "format": "date-time", "description": "When the task is due" },
+        "status": { "type": "string", "enum": ["Pending", "Completed"], "description": "Task status" },
+        "ownerId": { "type": "string", "description": "UID of the user who owns this task" }
+      },
+      "required": ["customerId", "title", "status", "ownerId"]
+    }
+  },
+  "firestore": {
+    "customers": {
+      "schema": "Customer",
+      "description": "Collection of customer records"
+    },
+    "interactions": {
+      "schema": "Interaction",
+      "description": "Collection of interaction logs"
+    },
+    "tasks": {
+      "schema": "Task",
+      "description": "Collection of follow-up tasks"
+    }
+  }
+}
