@@ -1,6 +1,7 @@
 export type CustomerStatus = 'Lead' | 'Contact' | 'Customer' | 'Inactive';
 export type InteractionType = 'Call' | 'Email' | 'Meeting' | 'Note';
 export type TaskStatus = 'Pending' | 'Completed';
+export type OpportunityStage = 'Discovery' | 'Proposal' | 'Negotiation' | 'Closed Won' | 'Closed Lost';
 
 export interface Customer {
   id?: string;
@@ -31,6 +32,18 @@ export interface Task {
   dueDate?: string;
   status: TaskStatus;
   ownerId: string;
+}
+
+export interface Opportunity {
+  id?: string;
+  customerId: string;
+  title: string;
+  value: number;
+  stage: OpportunityStage;
+  probability?: number;
+  expectedCloseDate?: string;
+  ownerId: string;
+  createdAt: string;
 }
 
 export enum OperationType {

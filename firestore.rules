@@ -72,6 +72,14 @@ service cloud.firestore {
              data.ownerId == request.auth.uid;
     }
 
+    function isValidOpportunity(data) {
+      return data.keys().hasAll(['customerId', 'title', 'value', 'stage', 'ownerId']) &&
+             data.title is string && data.title.size() > 0 && data.title.size() < 200 &&
+             data.value is number && data.value >= 0 &&
+             data.stage in ['Discovery', 'Proposal', 'Negotiation', 'Closed Won', 'Closed Lost'] &&
+             data.ownerId == request.auth.uid;
+    }
+
     // ===============================================================
     // Rules
     // ===============================================================
@@ -94,6 +102,13 @@ service cloud.firestore {
       allow read: if isDocOwner();
       allow create: if isAuthenticated() && isValidTask(request.resource.data);
       allow update: if isDocOwner() && isValidTask(request.resource.data);
+      allow delete: if isDocOwner();
+    }
+
+    match /opportunities/{opportunityId} {
+      allow read: if isDocOwner();
+      allow create: if isAuthenticated() && isValidOpportunity(request.resource.data);
+      allow update: if isDocOwner() && isValidOpportunity(request.resource.data);
       allow delete: if isDocOwner();
     }
   }

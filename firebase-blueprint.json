@@ -42,6 +42,22 @@
         "ownerId": { "type": "string", "description": "UID of the user who owns this task" }
       },
       "required": ["customerId", "title", "status", "ownerId"]
+    },
+    "Opportunity": {
+      "title": "Opportunity",
+      "description": "A potential deal or sale.",
+      "type": "object",
+      "properties": {
+        "customerId": { "type": "string", "description": "ID of the customer" },
+        "title": { "type": "string", "description": "Deal title" },
+        "value": { "type": "number", "description": "Estimated deal value" },
+        "stage": { "type": "string", "enum": ["Discovery", "Proposal", "Negotiation", "Closed Won", "Closed Lost"], "description": "Current stage of the deal" },
+        "probability": { "type": "number", "description": "Probability of closing (0-100)" },
+        "expectedCloseDate": { "type": "string", "format": "date", "description": "Estimated close date" },
+        "ownerId": { "type": "string", "description": "UID of the user who owns this deal" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Creation timestamp" }
+      },
+      "required": ["customerId", "title", "value", "stage", "ownerId"]
     }
   },
   "firestore": {
@@ -56,6 +72,10 @@
     "tasks": {
       "schema": "Task",
       "description": "Collection of follow-up tasks"
+    },
+    "opportunities": {
+      "schema": "Opportunity",
+      "description": "Collection of sales opportunities"
     }
   }
 }

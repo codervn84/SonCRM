@@ -19,7 +19,11 @@ import {
   AlertCircle,
   X,
   Edit2,
-  Trash2
+  Trash2,
+  TrendingUp,
+  DollarSign,
+  Target,
+  Briefcase
 } from 'lucide-react';
 import { 
   collection, 
@@ -51,9 +55,13 @@ import {
   ResponsiveContainer, 
   Cell,
   PieChart,
-  Pie
+  Pie,
+  LineChart,
+  Line,
+  AreaChart,
+  Area
 } from 'recharts';
-import { format, isAfter, parseISO } from 'date-fns';
+import { format, isAfter, parseISO, startOfMonth, endOfMonth, eachMonthOfInterval, subMonths } from 'date-fns';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 import { auth, db } from './firebase';
@@ -61,9 +69,11 @@ import {
   Customer, 
   Interaction, 
   Task, 
+  Opportunity,
   CustomerStatus, 
   InteractionType, 
   TaskStatus,
+  OpportunityStage,
   OperationType,
   FirestoreErrorInfo
 } from './types';
@@ -109,7 +119,7 @@ const Modal = ({ isOpen, onClose, title, children }: { isOpen: boolean, onClose:
             <X className="w-5 h-5 text-gray-500" />
           </button>
         </div>
-        <div className="p-6">{children}</div>
+        <div className="p-6 max-h-[80vh] overflow-y-auto">{children}</div>
       </div>
     </div>
   );
@@ -129,17 +139,33 @@ const StatusBadge = ({ status }: { status: CustomerStatus }) => {
   );
 };
 
+const StageBadge = ({ stage }: { stage: OpportunityStage }) => {
+  const colors = {
+    Discovery: 'bg-blue-100 text-blue-700 border-blue-200',
+    Proposal: 'bg-amber-100 text-amber-700 border-amber-200',
+    Negotiation: 'bg-purple-100 text-purple-700 border-purple-200',
+    'Closed Won': 'bg-emerald-100 text-emerald-700 border-emerald-200',
+    'Closed Lost': 'bg-rose-100 text-rose-700 border-rose-200',
+  };
+  return (
+    <span className={cn("px-2.5 py-0.5 rounded-full text-xs font-medium border", colors[stage])}>
+      {stage}
+    </span>
+  );
+};
+
 // --- Main App ---
 
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'customers' | 'tasks'>('dashboard');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'leads' | 'customers' | 'opportunities' | 'tasks'>('dashboard');
   
   // Data State
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [interactions, setInteractions] = useState<Interaction[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
+  const [opportunities, setOpportunities] = useState<Opportunity[]>([]);
   
   // UI State
   const [searchQuery, setSearchQuery] = useState('');
@@ -147,7 +173,9 @@ export default function App() {
   const [isCustomerModalOpen, setIsCustomerModalOpen] = useState(false);
   const [isInteractionModalOpen, setIsInteractionModalOpen] = useState(false);
   const [isTaskModalOpen, setIsTaskModalOpen] = useState(false);
+  const [isOpportunityModalOpen, setIsOpportunityModalOpen] = useState(false);
   const [editingCustomer, setEditingCustomer] = useState<Customer | null>(null);
+  const [editingOpportunity, setEditingOpportunity] = useState<Opportunity | null>(null);
 
   // Auth Listener
   useEffect(() => {
@@ -165,6 +193,7 @@ export default function App() {
     const customersQuery = query(collection(db, 'customers'), where('ownerId', '==', user.uid));
     const interactionsQuery = query(collection(db, 'interactions'), where('ownerId', '==', user.uid));
     const tasksQuery = query(collection(db, 'tasks'), where('ownerId', '==', user.uid));
+    const opportunitiesQuery = query(collection(db, 'opportunities'), where('ownerId', '==', user.uid));
 
     const unsubCustomers = onSnapshot(customersQuery, (snapshot) => {
       setCustomers(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Customer)));
@@ -178,26 +207,17 @@ export default function App() {
       setTasks(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Task)));
     }, (err) => handleFirestoreError(err, OperationType.LIST, 'tasks'));
 
+    const unsubOpportunities = onSnapshot(opportunitiesQuery, (snapshot) => {
+      setOpportunities(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Opportunity)));
+    }, (err) => handleFirestoreError(err, OperationType.LIST, 'opportunities'));
+
     return () => {
       unsubCustomers();
       unsubInteractions();
       unsubTasks();
+      unsubOpportunities();
     };
   }, [user]);
-
-  // Test Connection
-  useEffect(() => {
-    async function testConnection() {
-      try {
-        await getDocFromServer(doc(db, 'test', 'connection'));
-      } catch (error) {
-        if (error instanceof Error && error.message.includes('the client is offline')) {
-          console.error("Please check your Firebase configuration.");
-        }
-      }
-    }
-    testConnection();
-  }, []);
 
   const handleLogin = async () => {
     const provider = new GoogleAuthProvider();
@@ -237,6 +257,33 @@ export default function App() {
       setEditingCustomer(null);
     } catch (err) {
       handleFirestoreError(err, editingCustomer ? OperationType.UPDATE : OperationType.CREATE, 'customers');
+    }
+  };
+
+  const saveOpportunity = async (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    if (!user) return;
+    const formData = new FormData(e.currentTarget);
+    const data = {
+      customerId: formData.get('customerId') as string,
+      title: formData.get('title') as string,
+      value: Number(formData.get('value')),
+      stage: formData.get('stage') as OpportunityStage,
+      probability: Number(formData.get('probability')),
+      expectedCloseDate: formData.get('expectedCloseDate') as string,
+      ownerId: user.uid,
+    };
+
+    try {
+      if (editingOpportunity?.id) {
+        await updateDoc(doc(db, 'opportunities', editingOpportunity.id), data);
+      } else {
+        await addDoc(collection(db, 'opportunities'), { ...data, createdAt: new Date().toISOString() });
+      }
+      setIsOpportunityModalOpen(false);
+      setEditingOpportunity(null);
+    } catch (err) {
+      handleFirestoreError(err, editingOpportunity ? OperationType.UPDATE : OperationType.CREATE, 'opportunities');
     }
   };
 
@@ -293,35 +340,52 @@ export default function App() {
 
   // --- Derived Data ---
 
-  const filteredCustomers = useMemo(() => {
-    return customers.filter(c => 
-      c.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      c.email?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      c.company?.toLowerCase().includes(searchQuery.toLowerCase())
-    );
-  }, [customers, searchQuery]);
+  const leads = useMemo(() => customers.filter(c => c.status === 'Lead'), [customers]);
+  const activeCustomers = useMemo(() => customers.filter(c => c.status !== 'Lead'), [customers]);
+
+  const filteredData = useMemo(() => {
+    const q = searchQuery.toLowerCase();
+    const filterFn = (item: any) => 
+      (item.name || item.title || '').toLowerCase().includes(q) ||
+      (item.email || '').toLowerCase().includes(q) ||
+      (item.company || '').toLowerCase().includes(q);
+
+    return {
+      leads: leads.filter(filterFn),
+      customers: activeCustomers.filter(filterFn),
+      opportunities: opportunities.filter(filterFn),
+    };
+  }, [leads, activeCustomers, opportunities, searchQuery]);
 
   const dashboardStats = useMemo(() => {
-    const statusCounts = customers.reduce((acc, c) => {
-      acc[c.status] = (acc[c.status] || 0) + 1;
-      return acc;
-    }, {} as Record<string, number>);
+    const totalValue = opportunities
+      .filter(o => o.stage !== 'Closed Lost')
+      .reduce((sum, o) => sum + o.value, 0);
 
-    const chartData = [
-      { name: 'Leads', value: statusCounts['Lead'] || 0, color: '#3b82f6' },
-      { name: 'Contacts', value: statusCounts['Contact'] || 0, color: '#a855f7' },
-      { name: 'Customers', value: statusCounts['Customer'] || 0, color: '#10b981' },
-      { name: 'Inactive', value: statusCounts['Inactive'] || 0, color: '#6b7280' },
+    const wonValue = opportunities
+      .filter(o => o.stage === 'Closed Won')
+      .reduce((sum, o) => sum + o.value, 0);
+
+    const pipelineData = [
+      { name: 'Discovery', value: opportunities.filter(o => o.stage === 'Discovery').length, color: '#3b82f6' },
+      { name: 'Proposal', value: opportunities.filter(o => o.stage === 'Proposal').length, color: '#f59e0b' },
+      { name: 'Negotiation', value: opportunities.filter(o => o.stage === 'Negotiation').length, color: '#a855f7' },
+      { name: 'Won', value: opportunities.filter(o => o.stage === 'Closed Won').length, color: '#10b981' },
     ];
 
-    const recentInteractions = [...interactions]
-      .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
-      .slice(0, 5);
+    const revenueData = eachMonthOfInterval({
+      start: subMonths(new Date(), 5),
+      end: new Date()
+    }).map(month => {
+      const monthStr = format(month, 'MMM');
+      const monthWon = opportunities
+        .filter(o => o.stage === 'Closed Won' && format(new Date(o.createdAt), 'MMM') === monthStr)
+        .reduce((sum, o) => sum + o.value, 0);
+      return { name: monthStr, revenue: monthWon };
+    });
 
-    const pendingTasks = tasks.filter(t => t.status === 'Pending');
-
-    return { chartData, recentInteractions, pendingTasks };
-  }, [customers, interactions, tasks]);
+    return { totalValue, wonValue, pipelineData, revenueData };
+  }, [opportunities]);
 
   if (loading) {
     return (
@@ -340,7 +404,7 @@ export default function App() {
           </div>
           <div className="space-y-2">
             <h1 className="text-3xl font-bold text-gray-900">Nexus CRM</h1>
-            <p className="text-gray-500">Manage your customer relationships with ease and precision.</p>
+            <p className="text-gray-500">Manage your leads, opportunities, and sales performance.</p>
           </div>
           <button
             onClick={handleLogin}
@@ -357,7 +421,7 @@ export default function App() {
   return (
     <div className="min-h-screen bg-[#f8fafc] flex">
       {/* Sidebar */}
-      <aside className="w-64 bg-white border-r border-gray-200 flex flex-col fixed h-full">
+      <aside className="w-64 bg-white border-r border-gray-200 flex flex-col fixed h-full z-30">
         <div className="p-6 flex items-center gap-3">
           <div className="w-10 h-10 bg-indigo-600 rounded-xl flex items-center justify-center shadow-lg shadow-indigo-100">
             <Users className="w-6 h-6 text-white" />
@@ -368,7 +432,9 @@ export default function App() {
         <nav className="flex-1 px-4 space-y-1 mt-4">
           {[
             { id: 'dashboard', icon: LayoutDashboard, label: 'Dashboard' },
+            { id: 'leads', icon: Target, label: 'Leads' },
             { id: 'customers', icon: Users, label: 'Customers' },
+            { id: 'opportunities', icon: TrendingUp, label: 'Opportunities' },
             { id: 'tasks', icon: CheckSquare, label: 'Tasks' },
           ].map((item) => (
             <button
@@ -407,60 +473,102 @@ export default function App() {
           <div className="max-w-6xl mx-auto space-y-8">
             <header className="flex items-center justify-between">
               <div>
-                <h1 className="text-3xl font-bold text-gray-900">Dashboard</h1>
-                <p className="text-gray-500">Welcome back, {user.displayName?.split(' ')[0]}!</p>
+                <h1 className="text-3xl font-bold text-gray-900">Sales Dashboard</h1>
+                <p className="text-gray-500">Performance overview and sales metrics.</p>
               </div>
-              <button 
-                onClick={() => { setEditingCustomer(null); setIsCustomerModalOpen(true); }}
-                className="flex items-center gap-2 bg-indigo-600 text-white px-5 py-2.5 rounded-xl font-semibold hover:bg-indigo-700 transition-all shadow-lg shadow-indigo-100"
-              >
-                <Plus className="w-5 h-5" />
-                New Customer
-              </button>
+              <div className="flex gap-3">
+                <button 
+                  onClick={() => { setEditingCustomer(null); setIsCustomerModalOpen(true); }}
+                  className="flex items-center gap-2 bg-white border border-gray-200 text-gray-700 px-5 py-2.5 rounded-xl font-semibold hover:bg-gray-50 transition-all shadow-sm"
+                >
+                  <Plus className="w-5 h-5" />
+                  New Lead
+                </button>
+                <button 
+                  onClick={() => { setEditingOpportunity(null); setIsOpportunityModalOpen(true); }}
+                  className="flex items-center gap-2 bg-indigo-600 text-white px-5 py-2.5 rounded-xl font-semibold hover:bg-indigo-700 transition-all shadow-lg shadow-indigo-100"
+                >
+                  <TrendingUp className="w-5 h-5" />
+                  New Deal
+                </button>
+              </div>
             </header>
 
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
               <div className="bg-white p-6 rounded-3xl border border-gray-100 shadow-sm">
-                <p className="text-sm font-medium text-gray-500">Total Customers</p>
-                <p className="text-3xl font-bold text-gray-900 mt-1">{customers.length}</p>
-                <div className="mt-4 flex items-center gap-2 text-emerald-600 text-sm font-medium">
-                  <ChevronRight className="w-4 h-4" />
-                  <span>Active pipeline</span>
-                </div>
-              </div>
-              <div className="bg-white p-6 rounded-3xl border border-gray-100 shadow-sm">
-                <p className="text-sm font-medium text-gray-500">Pending Tasks</p>
-                <p className="text-3xl font-bold text-gray-900 mt-1">{dashboardStats.pendingTasks.length}</p>
-                <div className="mt-4 flex items-center gap-2 text-amber-600 text-sm font-medium">
-                  <Clock className="w-4 h-4" />
-                  <span>Needs attention</span>
-                </div>
-              </div>
-              <div className="bg-white p-6 rounded-3xl border border-gray-100 shadow-sm">
-                <p className="text-sm font-medium text-gray-500">Recent Interactions</p>
-                <p className="text-3xl font-bold text-gray-900 mt-1">{interactions.length}</p>
+                <p className="text-sm font-medium text-gray-500">Pipeline Value</p>
+                <p className="text-3xl font-bold text-gray-900 mt-1">${dashboardStats.totalValue.toLocaleString()}</p>
                 <div className="mt-4 flex items-center gap-2 text-indigo-600 text-sm font-medium">
-                  <MessageSquare className="w-4 h-4" />
-                  <span>Last 30 days</span>
+                  <TrendingUp className="w-4 h-4" />
+                  <span>Total potential</span>
+                </div>
+              </div>
+              <div className="bg-white p-6 rounded-3xl border border-gray-100 shadow-sm">
+                <p className="text-sm font-medium text-gray-500">Revenue (Won)</p>
+                <p className="text-3xl font-bold text-emerald-600 mt-1">${dashboardStats.wonValue.toLocaleString()}</p>
+                <div className="mt-4 flex items-center gap-2 text-emerald-600 text-sm font-medium">
+                  <DollarSign className="w-4 h-4" />
+                  <span>Closed deals</span>
+                </div>
+              </div>
+              <div className="bg-white p-6 rounded-3xl border border-gray-100 shadow-sm">
+                <p className="text-sm font-medium text-gray-500">Active Leads</p>
+                <p className="text-3xl font-bold text-gray-900 mt-1">{leads.length}</p>
+                <div className="mt-4 flex items-center gap-2 text-blue-600 text-sm font-medium">
+                  <Target className="w-4 h-4" />
+                  <span>New prospects</span>
+                </div>
+              </div>
+              <div className="bg-white p-6 rounded-3xl border border-gray-100 shadow-sm">
+                <p className="text-sm font-medium text-gray-500">Win Rate</p>
+                <p className="text-3xl font-bold text-gray-900 mt-1">
+                  {opportunities.length ? Math.round((opportunities.filter(o => o.stage === 'Closed Won').length / opportunities.length) * 100) : 0}%
+                </p>
+                <div className="mt-4 flex items-center gap-2 text-purple-600 text-sm font-medium">
+                  <CheckSquare className="w-4 h-4" />
+                  <span>Conversion</span>
                 </div>
               </div>
             </div>
 
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
               <div className="bg-white p-8 rounded-3xl border border-gray-100 shadow-sm">
-                <h3 className="text-lg font-bold text-gray-900 mb-6">Customer Pipeline</h3>
+                <h3 className="text-lg font-bold text-gray-900 mb-6">Revenue Trend (Last 6 Months)</h3>
                 <div className="h-64">
                   <ResponsiveContainer width="100%" height="100%">
-                    <BarChart data={dashboardStats.chartData}>
+                    <AreaChart data={dashboardStats.revenueData}>
+                      <defs>
+                        <linearGradient id="colorRev" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="5%" stopColor="#6366f1" stopOpacity={0.1}/>
+                          <stop offset="95%" stopColor="#6366f1" stopOpacity={0}/>
+                        </linearGradient>
+                      </defs>
                       <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
                       <XAxis dataKey="name" axisLine={false} tickLine={false} tick={{ fill: '#64748b', fontSize: 12 }} />
                       <YAxis axisLine={false} tickLine={false} tick={{ fill: '#64748b', fontSize: 12 }} />
                       <Tooltip 
+                        contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
+                      />
+                      <Area type="monotone" dataKey="revenue" stroke="#6366f1" fillOpacity={1} fill="url(#colorRev)" strokeWidth={3} />
+                    </AreaChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
+
+              <div className="bg-white p-8 rounded-3xl border border-gray-100 shadow-sm">
+                <h3 className="text-lg font-bold text-gray-900 mb-6">Pipeline by Stage</h3>
+                <div className="h-64">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={dashboardStats.pipelineData} layout="vertical">
+                      <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#f1f5f9" />
+                      <XAxis type="number" hide />
+                      <YAxis dataKey="name" type="category" axisLine={false} tickLine={false} tick={{ fill: '#64748b', fontSize: 12 }} width={100} />
+                      <Tooltip 
                         cursor={{ fill: '#f8fafc' }}
                         contentStyle={{ borderRadius: '12px', border: 'none', boxShadow: '0 10px 15px -3px rgb(0 0 0 / 0.1)' }}
                       />
-                      <Bar dataKey="value" radius={[6, 6, 0, 0]}>
-                        {dashboardStats.chartData.map((entry, index) => (
+                      <Bar dataKey="value" radius={[0, 6, 6, 0]}>
+                        {dashboardStats.pipelineData.map((entry, index) => (
                           <Cell key={`cell-${index}`} fill={entry.color} />
                         ))}
                       </Bar>
@@ -468,37 +576,147 @@ export default function App() {
                   </ResponsiveContainer>
                 </div>
               </div>
+            </div>
+          </div>
+        )}
 
-              <div className="bg-white p-8 rounded-3xl border border-gray-100 shadow-sm">
-                <h3 className="text-lg font-bold text-gray-900 mb-6">Recent Activity</h3>
-                <div className="space-y-6">
-                  {dashboardStats.recentInteractions.length > 0 ? (
-                    dashboardStats.recentInteractions.map((interaction) => {
-                      const customer = customers.find(c => c.id === interaction.customerId);
-                      return (
-                        <div key={interaction.id} className="flex gap-4">
-                          <div className="w-10 h-10 rounded-full bg-gray-50 flex items-center justify-center shrink-0">
-                            <MessageSquare className="w-5 h-5 text-gray-400" />
-                          </div>
-                          <div>
-                            <p className="text-sm text-gray-900">
-                              <span className="font-semibold">{interaction.type}</span> with{' '}
-                              <span className="font-semibold text-indigo-600">{customer?.name || 'Unknown'}</span>
-                            </p>
-                            <p className="text-xs text-gray-500 mt-0.5">{format(new Date(interaction.date), 'MMM d, h:mm a')}</p>
-                            <p className="text-sm text-gray-600 mt-2 line-clamp-1 italic">"{interaction.content}"</p>
-                          </div>
-                        </div>
-                      );
-                    })
-                  ) : (
-                    <div className="text-center py-12">
-                      <MessageSquare className="w-12 h-12 text-gray-200 mx-auto mb-4" />
-                      <p className="text-gray-500">No recent activity found.</p>
+        {activeTab === 'leads' && (
+          <div className="max-w-6xl mx-auto space-y-6">
+            <header className="flex items-center justify-between">
+              <h1 className="text-3xl font-bold text-gray-900">Leads</h1>
+              <button 
+                onClick={() => { setEditingCustomer(null); setIsCustomerModalOpen(true); }}
+                className="flex items-center gap-2 bg-indigo-600 text-white px-5 py-2.5 rounded-xl font-semibold hover:bg-indigo-700 transition-all shadow-lg shadow-indigo-100"
+              >
+                <Plus className="w-5 h-5" />
+                Add Lead
+              </button>
+            </header>
+
+            <div className="relative">
+              <Search className="w-5 h-5 text-gray-400 absolute left-4 top-1/2 -translate-y-1/2" />
+              <input
+                type="text"
+                placeholder="Search leads..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="w-full pl-12 pr-4 py-3 bg-white border border-gray-100 rounded-2xl shadow-sm focus:ring-2 focus:ring-indigo-500 transition-all"
+              />
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+              {filteredData.leads.map(lead => (
+                <div key={lead.id} className="bg-white p-6 rounded-3xl border border-gray-100 shadow-sm hover:shadow-md transition-all cursor-pointer group" onClick={() => setSelectedCustomer(lead)}>
+                  <div className="flex items-center justify-between mb-4">
+                    <div className="w-12 h-12 rounded-2xl bg-blue-50 flex items-center justify-center text-blue-600 font-bold text-xl">
+                      {lead.name.charAt(0)}
                     </div>
-                  )}
+                    <StatusBadge status={lead.status} />
+                  </div>
+                  <h3 className="text-lg font-bold text-gray-900 group-hover:text-indigo-600 transition-colors">{lead.name}</h3>
+                  <p className="text-sm text-gray-500 mb-4">{lead.company || 'Private Individual'}</p>
+                  <div className="space-y-2">
+                    <div className="flex items-center gap-2 text-xs text-gray-500">
+                      <Mail className="w-3 h-3" />
+                      {lead.email || 'No email'}
+                    </div>
+                    <div className="flex items-center gap-2 text-xs text-gray-500">
+                      <Phone className="w-3 h-3" />
+                      {lead.phone || 'No phone'}
+                    </div>
+                  </div>
+                  <div className="mt-6 pt-4 border-t border-gray-50 flex items-center justify-between">
+                    <span className="text-[10px] text-gray-400">Added {format(new Date(lead.createdAt), 'MMM d, yyyy')}</span>
+                    <button 
+                      onClick={(e) => { e.stopPropagation(); setEditingCustomer(lead); setIsCustomerModalOpen(true); }}
+                      className="p-2 hover:bg-gray-50 rounded-lg text-gray-400 hover:text-indigo-600 transition-colors"
+                    >
+                      <Edit2 className="w-4 h-4" />
+                    </button>
+                  </div>
                 </div>
-              </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'opportunities' && (
+          <div className="max-w-6xl mx-auto space-y-6">
+            <header className="flex items-center justify-between">
+              <h1 className="text-3xl font-bold text-gray-900">Opportunities</h1>
+              <button 
+                onClick={() => { setEditingOpportunity(null); setIsOpportunityModalOpen(true); }}
+                className="flex items-center gap-2 bg-indigo-600 text-white px-5 py-2.5 rounded-xl font-semibold hover:bg-indigo-700 transition-all shadow-lg shadow-indigo-100"
+              >
+                <Plus className="w-5 h-5" />
+                New Deal
+              </button>
+            </header>
+
+            <div className="bg-white rounded-3xl border border-gray-100 shadow-sm overflow-hidden">
+              <table className="w-full text-left">
+                <thead>
+                  <tr className="bg-gray-50/50 border-b border-gray-100">
+                    <th className="px-6 py-4 text-xs font-semibold text-gray-500 uppercase tracking-wider">Deal Title</th>
+                    <th className="px-6 py-4 text-xs font-semibold text-gray-500 uppercase tracking-wider">Customer</th>
+                    <th className="px-6 py-4 text-xs font-semibold text-gray-500 uppercase tracking-wider">Stage</th>
+                    <th className="px-6 py-4 text-xs font-semibold text-gray-500 uppercase tracking-wider">Value</th>
+                    <th className="px-6 py-4 text-xs font-semibold text-gray-500 uppercase tracking-wider">Prob.</th>
+                    <th className="px-6 py-4 text-xs font-semibold text-gray-500 uppercase tracking-wider text-right">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100">
+                  {filteredData.opportunities.map((opp) => {
+                    const customer = customers.find(c => c.id === opp.customerId);
+                    return (
+                      <tr key={opp.id} className="hover:bg-gray-50/50 transition-colors group">
+                        <td className="px-6 py-4">
+                          <p className="text-sm font-semibold text-gray-900">{opp.title}</p>
+                          <p className="text-[10px] text-gray-400">Expected: {opp.expectedCloseDate || 'N/A'}</p>
+                        </td>
+                        <td className="px-6 py-4">
+                          <p className="text-sm text-gray-600">{customer?.name || 'Unknown'}</p>
+                        </td>
+                        <td className="px-6 py-4">
+                          <StageBadge stage={opp.stage} />
+                        </td>
+                        <td className="px-6 py-4">
+                          <p className="text-sm font-bold text-gray-900">${opp.value.toLocaleString()}</p>
+                        </td>
+                        <td className="px-6 py-4">
+                          <div className="flex items-center gap-2">
+                            <div className="w-12 h-1.5 bg-gray-100 rounded-full overflow-hidden">
+                              <div className="h-full bg-indigo-500" style={{ width: `${opp.probability}%` }} />
+                            </div>
+                            <span className="text-xs text-gray-500">{opp.probability}%</span>
+                          </div>
+                        </td>
+                        <td className="px-6 py-4 text-right">
+                          <div className="flex items-center justify-end gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                            <button 
+                              onClick={() => { setEditingOpportunity(opp); setIsOpportunityModalOpen(true); }}
+                              className="p-2 hover:bg-gray-100 rounded-lg text-gray-400 hover:text-indigo-600 transition-colors"
+                            >
+                              <Edit2 className="w-4 h-4" />
+                            </button>
+                            <button 
+                              onClick={async () => {
+                                if (window.confirm('Delete this opportunity?')) {
+                                  try { await deleteDoc(doc(db, 'opportunities', opp.id!)); }
+                                  catch (err) { handleFirestoreError(err, OperationType.DELETE, 'opportunities'); }
+                                }
+                              }}
+                              className="p-2 hover:bg-red-50 rounded-lg text-gray-400 hover:text-red-600 transition-colors"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
             </div>
           </div>
         )}
@@ -516,21 +734,15 @@ export default function App() {
               </button>
             </header>
 
-            <div className="flex items-center gap-4 bg-white p-4 rounded-2xl border border-gray-100 shadow-sm">
-              <div className="relative flex-1">
-                <Search className="w-5 h-5 text-gray-400 absolute left-3 top-1/2 -translate-y-1/2" />
-                <input
-                  type="text"
-                  placeholder="Search by name, email, or company..."
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  className="w-full pl-10 pr-4 py-2 bg-gray-50 border-none rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 transition-all"
-                />
-              </div>
-              <button className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-gray-600 hover:bg-gray-50 rounded-xl transition-colors">
-                <Filter className="w-4 h-4" />
-                Filters
-              </button>
+            <div className="relative">
+              <Search className="w-5 h-5 text-gray-400 absolute left-4 top-1/2 -translate-y-1/2" />
+              <input
+                type="text"
+                placeholder="Search customers..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="w-full pl-12 pr-4 py-3 bg-white border border-gray-100 rounded-2xl shadow-sm focus:ring-2 focus:ring-indigo-500 transition-all"
+              />
             </div>
 
             <div className="bg-white rounded-3xl border border-gray-100 shadow-sm overflow-hidden">
@@ -540,12 +752,11 @@ export default function App() {
                     <th className="px-6 py-4 text-xs font-semibold text-gray-500 uppercase tracking-wider">Customer</th>
                     <th className="px-6 py-4 text-xs font-semibold text-gray-500 uppercase tracking-wider">Status</th>
                     <th className="px-6 py-4 text-xs font-semibold text-gray-500 uppercase tracking-wider">Company</th>
-                    <th className="px-6 py-4 text-xs font-semibold text-gray-500 uppercase tracking-wider">Last Update</th>
                     <th className="px-6 py-4 text-xs font-semibold text-gray-500 uppercase tracking-wider text-right">Actions</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100">
-                  {filteredCustomers.map((customer) => (
+                  {filteredData.customers.map((customer) => (
                     <tr 
                       key={customer.id} 
                       className="hover:bg-gray-50/50 transition-colors cursor-pointer group"
@@ -566,13 +777,7 @@ export default function App() {
                         <StatusBadge status={customer.status} />
                       </td>
                       <td className="px-6 py-4">
-                        <div className="flex items-center gap-2 text-sm text-gray-600">
-                          <Building2 className="w-4 h-4 text-gray-400" />
-                          {customer.company || '---'}
-                        </div>
-                      </td>
-                      <td className="px-6 py-4">
-                        <p className="text-xs text-gray-500">{format(new Date(customer.updatedAt), 'MMM d, yyyy')}</p>
+                        <p className="text-sm text-gray-600">{customer.company || '---'}</p>
                       </td>
                       <td className="px-6 py-4 text-right">
                         <div className="flex items-center justify-end gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
@@ -582,30 +787,10 @@ export default function App() {
                           >
                             <Edit2 className="w-4 h-4" />
                           </button>
-                          <button 
-                            onClick={async (e) => { 
-                              e.stopPropagation(); 
-                              if (window.confirm('Are you sure you want to delete this customer?')) {
-                                try { await deleteDoc(doc(db, 'customers', customer.id!)); }
-                                catch (err) { handleFirestoreError(err, OperationType.DELETE, 'customers'); }
-                              }
-                            }}
-                            className="p-2 hover:bg-red-50 rounded-lg text-gray-400 hover:text-red-600 transition-colors"
-                          >
-                            <Trash2 className="w-4 h-4" />
-                          </button>
                         </div>
                       </td>
                     </tr>
                   ))}
-                  {filteredCustomers.length === 0 && (
-                    <tr>
-                      <td colSpan={5} className="px-6 py-12 text-center">
-                        <Users className="w-12 h-12 text-gray-200 mx-auto mb-4" />
-                        <p className="text-gray-500">No customers found matching your search.</p>
-                      </td>
-                    </tr>
-                  )}
                 </tbody>
               </table>
             </div>
@@ -763,45 +948,6 @@ export default function App() {
                   )}
                 </div>
               </div>
-
-              {/* Tasks */}
-              <div className="space-y-4">
-                <div className="flex items-center justify-between">
-                  <h3 className="text-lg font-bold text-gray-900">Tasks</h3>
-                  <button 
-                    onClick={() => setIsTaskModalOpen(true)}
-                    className="text-sm font-semibold text-indigo-600 hover:text-indigo-700 flex items-center gap-1"
-                  >
-                    <Plus className="w-4 h-4" />
-                    Add Task
-                  </button>
-                </div>
-                <div className="space-y-3">
-                  {tasks.filter(t => t.customerId === selectedCustomer.id).length > 0 ? (
-                    tasks
-                      .filter(t => t.customerId === selectedCustomer.id)
-                      .map((task) => (
-                        <div key={task.id} className="flex items-center gap-3 p-3 rounded-xl border border-gray-100 hover:bg-gray-50 transition-colors group">
-                          <button 
-                            onClick={() => toggleTaskStatus(task)}
-                            className={cn(
-                              "w-5 h-5 rounded-full border-2 flex items-center justify-center transition-all",
-                              task.status === 'Completed' ? "bg-emerald-500 border-emerald-500 text-white" : "border-gray-300"
-                            )}
-                          >
-                            {task.status === 'Completed' && <CheckSquare className="w-3 h-3" />}
-                          </button>
-                          <div className="flex-1">
-                            <p className={cn("text-sm font-medium", task.status === 'Completed' && "line-through text-gray-400")}>{task.title}</p>
-                            {task.dueDate && <p className="text-[10px] text-gray-400">{format(new Date(task.dueDate), 'MMM d')}</p>}
-                          </div>
-                        </div>
-                      ))
-                  ) : (
-                    <p className="text-sm text-gray-400 italic py-4">No tasks assigned.</p>
-                  )}
-                </div>
-              </div>
             </div>
           </div>
         </div>
@@ -811,7 +957,7 @@ export default function App() {
       <Modal 
         isOpen={isCustomerModalOpen} 
         onClose={() => { setIsCustomerModalOpen(false); setEditingCustomer(null); }} 
-        title={editingCustomer ? "Edit Customer" : "Add New Customer"}
+        title={editingCustomer ? "Edit Customer" : "Add New Lead/Customer"}
       >
         <form onSubmit={saveCustomer} className="space-y-4">
           <div className="space-y-1">
@@ -848,7 +994,56 @@ export default function App() {
             </div>
           </div>
           <button type="submit" className="w-full bg-indigo-600 text-white py-3 rounded-xl font-bold hover:bg-indigo-700 transition-all mt-4">
-            {editingCustomer ? "Update Customer" : "Create Customer"}
+            {editingCustomer ? "Update" : "Create"}
+          </button>
+        </form>
+      </Modal>
+
+      <Modal 
+        isOpen={isOpportunityModalOpen} 
+        onClose={() => { setIsOpportunityModalOpen(false); setEditingOpportunity(null); }} 
+        title={editingOpportunity ? "Edit Opportunity" : "New Opportunity"}
+      >
+        <form onSubmit={saveOpportunity} className="space-y-4">
+          <div className="space-y-1">
+            <label className="text-xs font-semibold text-gray-500 uppercase">Customer</label>
+            <select name="customerId" defaultValue={editingOpportunity?.customerId} required className="w-full px-4 py-2 bg-gray-50 border-none rounded-xl text-sm focus:ring-2 focus:ring-indigo-500">
+              <option value="">Select Customer</option>
+              {customers.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+            </select>
+          </div>
+          <div className="space-y-1">
+            <label className="text-xs font-semibold text-gray-500 uppercase">Deal Title</label>
+            <input name="title" defaultValue={editingOpportunity?.title} required className="w-full px-4 py-2 bg-gray-50 border-none rounded-xl text-sm focus:ring-2 focus:ring-indigo-500" placeholder="e.g., Enterprise License" />
+          </div>
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-1">
+              <label className="text-xs font-semibold text-gray-500 uppercase">Value ($)</label>
+              <input name="value" type="number" defaultValue={editingOpportunity?.value} required className="w-full px-4 py-2 bg-gray-50 border-none rounded-xl text-sm focus:ring-2 focus:ring-indigo-500" />
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs font-semibold text-gray-500 uppercase">Probability (%)</label>
+              <input name="probability" type="number" min="0" max="100" defaultValue={editingOpportunity?.probability || 50} className="w-full px-4 py-2 bg-gray-50 border-none rounded-xl text-sm focus:ring-2 focus:ring-indigo-500" />
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-1">
+              <label className="text-xs font-semibold text-gray-500 uppercase">Stage</label>
+              <select name="stage" defaultValue={editingOpportunity?.stage || 'Discovery'} className="w-full px-4 py-2 bg-gray-50 border-none rounded-xl text-sm focus:ring-2 focus:ring-indigo-500">
+                <option value="Discovery">Discovery</option>
+                <option value="Proposal">Proposal</option>
+                <option value="Negotiation">Negotiation</option>
+                <option value="Closed Won">Closed Won</option>
+                <option value="Closed Lost">Closed Lost</option>
+              </select>
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs font-semibold text-gray-500 uppercase">Expected Close</label>
+              <input name="expectedCloseDate" type="date" defaultValue={editingOpportunity?.expectedCloseDate} className="w-full px-4 py-2 bg-gray-50 border-none rounded-xl text-sm focus:ring-2 focus:ring-indigo-500" />
+            </div>
+          </div>
+          <button type="submit" className="w-full bg-indigo-600 text-white py-3 rounded-xl font-bold hover:bg-indigo-700 transition-all mt-4">
+            {editingOpportunity ? "Update Deal" : "Create Deal"}
           </button>
         </form>
       </Modal>
